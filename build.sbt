@@ -9,8 +9,11 @@ lazy val `effective-actors` =
     .settings(settings)
     .settings(
       libraryDependencies ++= Seq(
+        library.cats,
+        library.`cats-effect`,
+        library.fs2,
         library.scalaCheck % Test,
-        library.utest      % Test
+        library.utest % Test
       )
     )
 
@@ -20,12 +23,20 @@ lazy val `effective-actors` =
 
 lazy val library =
   new {
+
     object Version {
       val scalaCheck = "1.14.0"
-      val utest      = "0.6.4"
+      val utest = "0.6.4"
+      val `cats-effect` = "1.0.0-RC3"
+      val cats = "1.2.0"
+      val fs2 = "1.0.0-M4"
     }
+
+    val `cats-effect` = "org.typelevel" %% "cats-effect" % Version.`cats-effect`
+    val fs2 = "co.fs2" %% "fs2-core" % Version.fs2
+    val cats = "org.typelevel" %% "cats-core" % Version.cats
     val scalaCheck = "org.scalacheck" %% "scalacheck" % Version.scalaCheck
-    val utest      = "com.lihaoyi"    %% "utest"      % Version.utest
+    val utest = "com.lihaoyi" %% "utest" % Version.utest
   }
 
 // *****************************************************************************
@@ -34,7 +45,7 @@ lazy val library =
 
 lazy val settings =
   commonSettings ++
-  scalafmtSettings
+    scalafmtSettings
 
 lazy val commonSettings =
   Seq(
@@ -56,8 +67,10 @@ lazy val commonSettings =
     Compile / unmanagedSourceDirectories := Seq((Compile / scalaSource).value),
     Test / unmanagedSourceDirectories := Seq((Test / scalaSource).value),
     testFrameworks += new TestFramework("utest.runner.Framework"),
-    Compile / compile / wartremoverWarnings ++= Warts.unsafe
-)
+    Compile / compile / wartremoverWarnings ++= Warts.unsafe,
+    addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.2.4"),
+    cancelable := true
+  )
 
 lazy val scalafmtSettings =
   Seq(
