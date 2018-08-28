@@ -17,11 +17,13 @@
 package effective.actors
 
 import java.util.UUID
+import java.util.concurrent.atomic.AtomicInteger
 
 import utest._
 import actor._
-import cats.Eq
+import cats.{ Applicative, Eq, Id }
 import cats.effect._
+import cats.effect.concurrent.Ref
 import cats.effect.internals.IOContextShift
 import cats.implicits._
 import effective.actors.actor.Return.Result
@@ -35,22 +37,25 @@ object BasicActorTests extends TestSuite {
   case object Inc extends Messages
   implicit def eqFoo[O]: Eq[Return[O]] = Eq.fromUniversalEquals
 
-  val behaviour: Messages => Int => (Int, Result[Int]) = {
+  def behaviour[F[_]: Applicative]: Messages => Int => F[(Int, Result[Int])] = {
     case Inc =>
       counter =>
-        if (counter % 100 == 0) {
-//          println(s"Counter is $counter")
-        }
-        (counter + 1, Return.Result(counter + 1))
+        Applicative[F].pure(counter + 1, Return.Result(counter + 1))
   }
 
   implicit val ec = IOContextShift.global
 
   implicit val timer = IO.timer(ExecutionContext.Implicits.global)
 
+  def repeatN[T](n: Int, f: IO[T]): IO[T] = {
+    def _repeatN(n: Int, acc: IO[T]): IO[T] =
+      if (n <= 1) acc else _repeatN(n - 1, acc *> f)
+    _repeatN(n, f)
+  }
+
   override val tests: Tests = Tests {
     "counter" - {
-      val counter = mkActorSync(0, behaviour, IO(UUID.randomUUID().toString))
+      val counter = mkActorSync(0, behaviour[Id], IO(UUID.randomUUID().toString))
 
       val res = for {
         (id1, ref, killIt)   <- counter
@@ -77,7 +82,7 @@ object BasicActorTests extends TestSuite {
     }
 
     "a killed actor should never respond" - {
-      val counter = mkActorSync(0, behaviour, IO(UUID.randomUUID().toString))
+      val counter = mkActorSync(0, behaviour[Id], IO(UUID.randomUUID().toString))
 
       val shouldNotTerminate = for {
         (_, ref, killIt) <- counter
@@ -91,31 +96,76 @@ object BasicActorTests extends TestSuite {
       println(result)
       assert(result.isLeft)
     }
+    val times = 1000 * 1000
 
-    "should sum up to 10 milions reasonably fast" - {
-      val times = 1000 * 1000
-      def repeatN[T](n: Int, f: IO[T]): IO[T] = {
-        def _repeatN(n: Int, acc: IO[T]): IO[T] =
-          if (n <= 1) acc else _repeatN(n - 1, acc *> f)
-        _repeatN(n, f)
+    "benchmark with Ref" - {
+      val eff = for {
+        ref <- Ref[IO].of(0)
+        res <- repeatN(times, ref.modify(c => (c + 1, c + 1)))
+      } yield res
+      assert(eff.unsafeRunSync == times)
+    }
+
+    "benchmark with AtomicInt" - {
+      val i = new AtomicInteger(0)
+      while (i.get < times) {
+        i.addAndGet(1)
       }
-      val counter = mkActorSync(0, behaviour, IO(UUID.randomUUID().toString))
+      assert(i.get() == times)
+    }
+
+    "benchmark without overhead" - {
+      var i = 0
+      while (i < times) {
+        i += 1
+      }
+      assert(i == times)
+    }
+
+    "benchmark with fs2" - {
+      val stream: fs2.Stream[IO, Int] = fs2.Stream.fromIterator[IO, Int]({
+        var i = 0
+        new Iterator[Int] {
+          override def hasNext: Boolean = i < times
+
+          override def next(): Int = {
+            i += 1
+            1
+          }
+        }
+      })
+      val result: Option[Int] = stream.fold(0)(_ + _).compile.last.unsafeRunSync()
+      assert(result == Option(times))
+    }
+
+    def baseActorTest(actor: IO[Actor[IO, Int, Messages, Int]]): Int = {
       val result: IO[Return[Int]] = for {
-        (id, ref, kill) <- counter
-        res             <- repeatN(times, ref(Inc))
-        _               <- kill.start
+        (_, ref, kill) <- actor
+        res            <- repeatN(times, ref(Inc))
+        _              <- kill.start
       } yield res
 
       val r = result.unsafeRunSync()
-      println(s"res: $r")
-      val predicate = r match {
-        case Return.Result(`times`) =>
-          println("correct")
-          true
+      r match {
+        case Return.Result(i) =>
+          i
         case r =>
-          false
+          throw AssertionError(s"result was $r", Seq.empty)
       }
-      assert(predicate)
+
+    }
+
+    "benchmark with actor Sync " - {
+
+      val counter = mkActorSync(0, behaviour[Id], IO(UUID.randomUUID().toString))
+      assert(baseActorTest(counter) == times)
+    }
+    
+    "benchmark with actor IO" - {
+      val b: Messages => Int => IO[(Int, Result[Int])] = behaviour[IO]
+      val counter                                      = mkActorF[IO, Int, Messages, Int](0, b, IO(UUID.randomUUID().toString))
+      val r                                            = baseActorTest(counter)
+      assert(r == times)
     }
   }
 }

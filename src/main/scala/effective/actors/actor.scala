@@ -62,6 +62,8 @@ object actor {
 
   val killTimeout: FiniteDuration = 200 millis
 
+  type Actor[F[_], S, I, O] = (ActorId, I => F[Return[O]], CancelToken[F])
+
   /**
     *
     *
@@ -80,7 +82,7 @@ object actor {
     timer: Timer[F],
     contextShift: ContextShift[F],
     log: Logger[F],
-    M: FlatMap[F]): F[(ActorId, I => F[Return[O]], CancelToken[F])] = {
+    M: FlatMap[F]): F[Actor[F, S, I, O]] = {
     val modifyState: I => Ref[F, S] => F[Return[O]] = msg =>
       ref =>
         for {
@@ -101,7 +103,7 @@ object actor {
     timer: Timer[F],
     contextShift: ContextShift[F],
     log: Logger[F],
-    M: FlatMap[F]): F[(ActorId, I => F[Return[O]], CancelToken[F])] = {
+    M: FlatMap[F]): F[Actor[F, S, I, O]] = {
     val modifyState: I => Ref[F, S] => F[Return[O]] = msg => ref => ref.modify(receive(msg))
     mkActor(initialState, modifyState, identifier)
   }
@@ -114,7 +116,7 @@ object actor {
     timer: Timer[F],
     contextShift: ContextShift[F],
     log: Logger[F],
-    M: FlatMap[F]): F[(ActorId, I => F[Return[O]], CancelToken[F])] = ???
+    M: FlatMap[F]): F[Actor[F, S, I, O]] = ???
 
   private def mkActor[F[_], S, I, O](
       initialState: S,
@@ -124,7 +126,7 @@ object actor {
     M: FlatMap[F],
     timer: Timer[F],
     log: Logger[F],
-    contextShift: ContextShift[F]): F[(ActorId, I => F[Return[O]], CancelToken[F])] = {
+    contextShift: ContextShift[F]): F[Actor[F, S, I, O]] = {
 
     val receiveOneMsg: Ref[F, S] => Queue[F, (I, Deferred[F, Return[O]])] => F[Return[O]] =
       state =>
@@ -167,8 +169,10 @@ object actor {
       case _: Return.Result[_] =>
         Concurrent[F].unit
       case err: Return.Error[_] =>
-        Logger[F].error(s"Actor ${ctx.id} failed: ${err.reason}")
+        Logger[F].error(s"Actor ${ctx.id} failed: ${err.reason}") *>
+        Concurrent[F].never[Unit]
       case Return.Stop =>
+        Logger[F].error(s"Actor ${ctx.id} stopped by external command") *>
         Concurrent[F].never[Unit]
     }
 
