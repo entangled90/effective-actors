@@ -69,7 +69,8 @@ lazy val commonSettings =
     testFrameworks += new TestFramework("utest.runner.Framework"),
     Compile / compile / wartremoverWarnings ++= Warts.unsafe,
     addCompilerPlugin("com.olegpy" %% "better-monadic-for" % "0.2.4"),
-    cancelable := true
+    cancelable in Test := true
+
   )
 
 lazy val scalafmtSettings =
