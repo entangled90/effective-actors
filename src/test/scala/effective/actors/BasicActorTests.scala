@@ -47,10 +47,31 @@ object BasicActorTests extends TestSuite {
 
   implicit val timer = IO.timer(ExecutionContext.Implicits.global)
 
+  implicit val noOpLogging: Logger[IO] = Logger.apply[IO]((s: String) => IO.unit)
+
   def repeatN[T](n: Int, f: IO[T]): IO[T] = {
     def _repeatN(n: Int, acc: IO[T]): IO[T] =
       if (n <= 1) acc else _repeatN(n - 1, acc *> f)
     _repeatN(n, f)
+  }
+
+  val times = 1000 * 1000
+
+  def baseActorTest(actor: IO[Actor[IO, Int, Messages, Int]]): Int = {
+    val result: IO[Return[Int]] = for {
+      (_, ref, kill) <- actor
+      res            <- repeatN(times, ref(Inc))
+      _              <- kill.start
+    } yield res
+
+    val r = result.unsafeRunSync()
+    r match {
+      case Return.Result(i) =>
+        i
+      case r =>
+        throw AssertionError(s"result was $r", Seq.empty)
+    }
+
   }
 
   override val tests: Tests = Tests {
@@ -72,14 +93,14 @@ object BasicActorTests extends TestSuite {
 
       assert(res.unsafeRunSync() === ((Result(5), Result(1))))
     }
-    "forever.start.cancel should return instantly" - {
-      val f = for {
-        fiber <- IO("success").foreverM.start
-        _     <- fiber.cancel
-      } yield "success"
-
-      assert(IO.race(f, IO.sleep(200 millis) *> IO("failed")).unsafeRunSync() == Left("success"))
-    }
+//    "forever.start.cancel should return instantly" - {
+//      val f = for {
+//        fiber <- IO("success").foreverM.start
+//        _     <- fiber.cancel
+//      } yield "success"
+//
+//      assert(IO.race(f, IO.sleep(200 millis) *> IO("failed")).unsafeRunSync() == Left("success"))
+//    }
 
     "a killed actor should never respond" - {
       val counter = mkActorSync(0, behaviour[Id], IO(UUID.randomUUID().toString))
@@ -93,10 +114,8 @@ object BasicActorTests extends TestSuite {
         IO.race(IO.sleep(500 millis) *> IO("failed"), shouldNotTerminate.flatMap(f => f(Inc)))
 
       val result = raced.unsafeRunSync()
-      println(result)
       assert(result.isLeft)
     }
-    val times = 1000 * 1000
 
     "benchmark with Ref" - {
       val eff = for {
@@ -138,29 +157,11 @@ object BasicActorTests extends TestSuite {
       assert(result == Option(times))
     }
 
-    def baseActorTest(actor: IO[Actor[IO, Int, Messages, Int]]): Int = {
-      val result: IO[Return[Int]] = for {
-        (_, ref, kill) <- actor
-        res            <- repeatN(times, ref(Inc))
-        _              <- kill.start
-      } yield res
-
-      val r = result.unsafeRunSync()
-      r match {
-        case Return.Result(i) =>
-          i
-        case r =>
-          throw AssertionError(s"result was $r", Seq.empty)
-      }
-
-    }
-
     "benchmark with actor Sync " - {
-
       val counter = mkActorSync(0, behaviour[Id], IO(UUID.randomUUID().toString))
       assert(baseActorTest(counter) == times)
     }
-    
+
     "benchmark with actor IO" - {
       val b: Messages => Int => IO[(Int, Result[Int])] = behaviour[IO]
       val counter                                      = mkActorF[IO, Int, Messages, Int](0, b, IO(UUID.randomUUID().toString))

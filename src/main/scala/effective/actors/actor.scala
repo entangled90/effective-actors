@@ -16,6 +16,8 @@
 
 package effective.actors
 
+import java.time.Instant
+
 import cats.FlatMap
 import cats.effect._
 import cats.effect.concurrent._
@@ -40,24 +42,30 @@ object actor {
     def info(s: => String): F[Unit]
     def warn(s: => String): F[Unit]
     def error(s: => String): F[Unit]
-    def debug(s: F[String]): F[Unit]
-    def info(s: F[String]): F[Unit]
-    def warn(s: F[String]): F[Unit]
-    def error(s: F[String]): F[Unit]
   }
+
   object Logger {
-    def apply[F[_]: Concurrent]: Logger[F] = implicitly[Logger[F]]
-    implicit def logger[F[_]](implicit eff: Concurrent[F]): Logger[F] = new Logger[F] {
-      override def debug(s: => String): F[Unit] = eff.delay(println(s))
-      override def info(s: => String): F[Unit]  = eff.delay(println(s))
-      override def warn(s: => String): F[Unit]  = eff.delay(println(s))
-      override def error(s: => String): F[Unit] = eff.delay(println(s))
-      override def debug(s: F[String]): F[Unit] = s.map(println)
-      override def info(s: F[String]): F[Unit]  = s.map(println)
-      override def warn(s: F[String]): F[Unit]  = s.map(println)
-      override def error(s: F[String]): F[Unit] = s.map(println)
+    def apply[F[_]: Concurrent: Timer]: Logger[F] = implicitly[Logger[F]]
+
+    def apply[F[_]: Concurrent: Timer](output: String => F[Unit]): Logger[F] =
+      new LoggerImpl[F](output)
+
+    private class LoggerImpl[F[_]](output: String => F[Unit])(implicit eff: Concurrent[F],
+                                                              timer: Timer[F])
+        extends Logger[F] {
+      private val log: (=> String, => String) => F[Unit] = (s, level) => {
+        timer.clock
+          .realTime(MILLISECONDS)
+          .flatMap(millis => output(s"[$level] @ ${Instant.ofEpochMilli(millis)}: $s"))
+      }
+      override def debug(s: => String): F[Unit] = log(s, "DEBUG")
+      override def info(s: => String): F[Unit]  = log(s, "INFO")
+      override def warn(s: => String): F[Unit]  = log(s, "WARN")
+      override def error(s: => String): F[Unit] = log(s, "ERROR")
     }
 
+    implicit def logger[F[_]](implicit eff: Concurrent[F], timer: Timer[F]): Logger[F] =
+      new LoggerImpl[F](s => Concurrent[F].delay(println(s)))
   }
 
   val killTimeout: FiniteDuration = 200 millis
@@ -164,7 +172,7 @@ object actor {
     } yield (id, sendToMailbox(queue), cancelToken)
   }
 
-  private def handleReturn[F[_]: Logger: Concurrent, O]: Ctx[F] => Return[O] => F[Unit] =
+  private def handleReturn[F[_]: Logger: Concurrent: Timer, O]: Ctx[F] => Return[O] => F[Unit] =
     ctx => {
       case _: Return.Result[_] =>
         Concurrent[F].unit
